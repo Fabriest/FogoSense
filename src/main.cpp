@@ -3,12 +3,17 @@
 #include <PubSubClient.h>
 #include <Adafruit_AHTX0.h>
 #include <Adafruit_BMP280.h>
+#include <cJSON.h>
 #include "secrets.h"
 
 #define PIN_SUELO 33
 #define PIN_LLUVIA 34
 // #define PIN_MQ2 32
 // #define PIN_LDR 35
+
+//#define PIN_LLAMA 4          
+//#define PIN_BOTON_PANICO 5   
+//#define PIN_INCLINACION 18   
 
 #define PIN_LED 15
 // #define PIN_BUZZER 16
@@ -30,7 +35,6 @@ void conectarWiFi() {
     Serial.print(".");
   }
   Serial.println("\nWiFi Conectado.");
-  Serial.println(WiFi.localIP());
 }
 
 void reconectarMQTT() {
@@ -73,6 +77,32 @@ String calcularRiesgoFosberg(float tempC, float hum, int lluvia, int suelo, int 
 }
 */
 
+void enviar_telemetria_aws(float temp, float hum, float presion, int suelo, int lluvia, int gas, int luz, String riesgo, int llama, int inclinacion, int boton) {
+  cJSON *root = cJSON_CreateObject();
+  cJSON_AddStringToObject(root, "device_id", "device_equipo2");
+
+  cJSON *telemetria = cJSON_CreateObject();
+  cJSON_AddNumberToObject(telemetria, "temperatura", temp);
+  cJSON_AddNumberToObject(telemetria, "humedad", hum);
+  cJSON_AddNumberToObject(telemetria, "presion", presion);
+  cJSON_AddNumberToObject(telemetria, "suelo", suelo);
+  cJSON_AddNumberToObject(telemetria, "lluvia", lluvia);
+  cJSON_AddNumberToObject(telemetria, "gas_mq2_ppm", gas);
+  cJSON_AddNumberToObject(telemetria, "luz", luz);
+  cJSON_AddStringToObject(telemetria, "estado_riesgo", riesgo.c_str());
+  cJSON_AddNumberToObject(telemetria, "alerta_llama", llama);
+  cJSON_AddNumberToObject(telemetria, "alerta_inclinacion", inclinacion);
+  cJSON_AddNumberToObject(telemetria, "boton_panico", boton);
+
+  cJSON_AddItemToObject(root, "telemetria", telemetria);
+  char *json_string = cJSON_PrintUnformatted(root);
+  
+  client.publish("seccion20/fogosense/datos_aws", json_string);
+  
+  cJSON_Delete(root);
+  free(json_string);
+}
+
 void setup() {
   Serial.begin(115200);
   
@@ -81,8 +111,12 @@ void setup() {
   
   // pinMode(PIN_BUZZER, OUTPUT);
   // digitalWrite(PIN_BUZZER, LOW);
+  
+  // pinMode(PIN_LLAMA, INPUT);
+  // pinMode(PIN_INCLINACION, INPUT);
+  // pinMode(PIN_BOTON_PANICO, INPUT_PULLUP); 
 
-  Serial.println("\n--- Iniciando Nodo IoT ---");
+  Serial.println("\n--- Iniciando Nodo IoT (Fase 03) ---");
 
   if (!aht.begin()) Serial.println("Error AHT20");
   if (!bmp.begin(0x76)) Serial.println("Error BMP280 en 0x76");
@@ -106,12 +140,23 @@ void loop() {
     int valorSuelo = analogRead(PIN_SUELO);
     int valorLluvia = analogRead(PIN_LLUVIA);
     
-    // int valorGas = analogRead(PIN_MQ2);
-    // int valorLuz = analogRead(PIN_LDR);
+    int valorGas = 0;
+    int valorLuz = 0;
+    // valorGas = analogRead(PIN_MQ2);
+    // valorLuz = analogRead(PIN_LDR);
+    
+    // int alertaLlama = digitalRead(PIN_LLAMA);
+    // int alertaInclinacion = digitalRead(PIN_INCLINACION);
+    //  int alertaBoton = digitalRead(PIN_BOTON_PANICO); 
 
     // --- CÁLCULO TEMPORAL BASADO EN TEMPERATURA ---
     String estadoRiesgo = "Normal";
     if (temperatura.temperature > 28.0) {
+      estadoRiesgo = "Extremo";
+    }
+
+    // Lógica de anulación por sensores digitales
+    if (alertaLlama == HIGH || alertaInclinacion == HIGH || alertaBoton == LOW) {
       estadoRiesgo = "Extremo";
     }
 
@@ -126,16 +171,14 @@ void loop() {
     }
 
     Serial.println("--------------------------------");
-    Serial.printf("Temp: %.2f C | Hum: %.2f %% | Presión: %.2f hPa\n", temperatura.temperature, humedad.relative_humidity, presion);
-    Serial.printf("Suelo: %d | Lluvia: %d\n", valorSuelo, valorLluvia);
+    Serial.printf("Temp: %.2f C | Hum: %.2f %% | Pres: %.2f hPa\n", temperatura.temperature, humedad.relative_humidity, presion);
+    // Serial.printf("Analog -> Suelo: %d | Lluvia: %d | Gas: %d | Luz: %d\n", valorSuelo, valorLluvia, valorGas, valorLuz);
+    // Serial.printf("Digital-> Llama: %d | Inclinación: %d | Botón: %d\n", alertaLlama, alertaInclinacion, alertaBoton);
     Serial.printf("Riesgo: %s\n", estadoRiesgo.c_str());
 
     if (client.connected()) {
-      client.publish("uvg/nodo1/temp", String(temperatura.temperature).c_str());
-      client.publish("uvg/nodo1/presion", String(presion).c_str());
-      client.publish("uvg/gateway/riesgo", estadoRiesgo.c_str());
-      
-      // client.publish("uvg/nodo1/gas", String(valorGas).c_str());
+      enviar_telemetria_aws(temperatura.temperature, humedad.relative_humidity, presion);
+      // enviar_telemetria_aws(temperatura.temperature, humedad.relative_humidity, presion, valorSuelo, valorLluvia, valorGas, valorLuz, estadoRiesgo, alertaLlama, alertaInclinacion, alertaBoton);
     }
   }
 }
