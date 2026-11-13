@@ -35,7 +35,6 @@ void conectarWiFi() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   
   int intentos = 0;
-  // Máximo 20 intentos (10 segundos) para no congelar el ESP32 si no hay red
   while (WiFi.status() != WL_CONNECTED && intentos < 20) {
     delay(500);
     Serial.print(".");
@@ -77,12 +76,21 @@ float obtenerValorFosberg(float tempC, float hum, int luz) {
   float n = 1.0 - (2.0 * m30) + (1.5 * m30 * m30) - (0.5 * m30 * m30 * m30);
   float f = n * (sqrt(1.0 + 25.0) / 0.3002);
   
-  if (luz > 3000) f += 10.0; 
+if (luz >= 1500) {
+    // Entre 1500 (día nublado/interior) y 4095 (pleno sol), suma de 0.0 a +10.0 puntos
+    float factorSolar = (luz - 1500.0) / (4095.0 - 1500.0);
+    f += (factorSolar * 10.0);
+  } else {
+    // Entre 1500 y 0 (noche total), reduce el índice progresivamente hasta un 25%
+    float factorNocturno = luz / 1500.0;
+    f *= (0.75 + (0.25 * factorNocturno));
+  }
+  
   return f;
 }
 
 String evaluarRiesgo(float ffwi, float tempC, int lluvia, int suelo, int gas, int llama, int inclinacion, int boton) {
-  if (tempC > 28.0 || gas > 2000 || llama == LOW || inclinacion == LOW || boton == LOW) {
+  if (tempC > 28.0 || gas > 2000 || llama == 1 || inclinacion == 1 || boton == 1) {
     return "Extremo";
   }
   
@@ -142,7 +150,10 @@ void setup() {
   if (!ahtListo) Serial.println("-> Aviso: Error AHT20 (Revisa cables SDA/SCL)");
   
   bmpListo = bmp.begin(0x76);
-  if (!bmpListo) Serial.println("-> Aviso: Error BMP280 en 0x76");
+    if (!bmpListo) {
+      bmpListo = bmp.begin(0x77); // Prueba la dirección alternativa común en módulos AHT20+BMP280
+    }
+    if (!bmpListo) Serial.println("-> Aviso: Error BMP280 en 0x76 y 0x77");
   
   conectarWiFi();
   
@@ -179,9 +190,9 @@ void loop() {
     int valorGas = analogRead(PIN_MQ2);
     int valorLuz = analogRead(PIN_LDR);
     
-    int alertaLlama = digitalRead(PIN_LLAMA);
+    int alertaLlama = !digitalRead(PIN_LLAMA);
     int alertaInclinacion = digitalRead(PIN_INCLINACION);
-    int alertaBoton = digitalRead(PIN_BOTON_PANICO); 
+    int alertaBoton = !digitalRead(PIN_BOTON_PANICO); 
 
     float indiceFFWI = obtenerValorFosberg(tempVal, humVal, valorLuz);
     String estadoRiesgo = evaluarRiesgo(indiceFFWI, tempVal, valorLluvia, valorSuelo, valorGas, alertaLlama, alertaInclinacion, alertaBoton);
@@ -200,7 +211,11 @@ void loop() {
     Serial.printf("Digital-> Llama: %d | Inclinación: %d | Botón: %d\n", alertaLlama, alertaInclinacion, alertaBoton);
     Serial.printf("Fosberg FFWI: %.2f | Riesgo: %s\n", indiceFFWI, estadoRiesgo.c_str());
 
-    if (WiFi.status() == WL_CONNECTED) {
+if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("Reconectando WiFi...");
+      WiFi.disconnect();
+      WiFi.reconnect();
+    } else {
       if (!client.connected()) {
         reconectarMQTT();
       }
